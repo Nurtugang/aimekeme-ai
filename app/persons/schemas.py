@@ -48,3 +48,6 @@ class PersonsRequest(BaseModel):
 class PersonsResponse(BaseModel):
     results: list[FrameResult] = Field(..., description="По одному результату на кадр, в том же порядке.")
     processing_ms: float = Field(..., description="Время сервера на decode + inference, мс.")
+    timings_ms: dict[str, float] | None = Field(
+        None, description="Этапы processing_ms, мс: decode, wait (очередь к модели), infer, post."
+    )

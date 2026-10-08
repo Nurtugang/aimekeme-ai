@@ -203,23 +203,36 @@ class PersonsDetector:
 
         start = time.perf_counter()
         decoded = [self._decode_frame(raw, i) for i, raw in enumerate(frames)]
+        prepared = time.perf_counter()
 
         with self._lock:
+            locked = time.perf_counter()
             per_frame_dets = detect(
                 self._model, decoded, self._settings.persons_conf_thresh, self._device
             )
             self._renumber_tracks(per_frame_dets)
+        inferred = time.perf_counter()
 
         results = [
             self._build_frame_result(bgr, dets)
             for bgr, dets in zip(decoded, per_frame_dets)
         ]
 
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
         total_persons = sum(r["count"] for r in results)
         logger.debug("frames=%d, persons=%d (%.1f ms)", len(frames), total_persons, elapsed_ms)
 
-        return {"results": results, "processing_ms": round(elapsed_ms, 2)}
+        return {
+            "results": results,
+            "processing_ms": round(elapsed_ms, 2),
+            "timings_ms": {
+                "decode": round((prepared - start) * 1000, 2),
+                "wait": round((locked - prepared) * 1000, 2),
+                "infer": round((inferred - locked) * 1000, 2),
+                "post": round((end - inferred) * 1000, 2),
+            },
+        }
 
     def _renumber_tracks(self, per_frame_dets: list[list[dict]]) -> None:
         """Локальные id трекера (1, 2, 3... в каждом запросе) -> сквозные по процессу."""
