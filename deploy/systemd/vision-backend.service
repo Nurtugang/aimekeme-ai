@@ -1,0 +1,24 @@
+# Платформа vision: backend + broker (чтение камер, такты модулей, события).
+# Порядок запуска с AI-API не важен (R6): без AI-API модули камер просто в
+# ошибке, пока он не поднимется. Нужна только база.
+[Unit]
+Description=vision platform backend + broker
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=vision
+Group=vision
+WorkingDirectory=/opt/vision/platform/backend
+Environment=HOME=/var/lib/vision
+# Без --reload: broker плодит потоки при перезагрузке кода (vision/DEPLOYMENT.md).
+ExecStart=/opt/vision/platform/backend/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8013
+Restart=always
+RestartSec=5
+# Остановка: воркеры камер гасят ffmpeg и сбрасывают корзины тепловой карты.
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

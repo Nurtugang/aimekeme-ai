@@ -32,6 +32,7 @@ import torch
 from app.counting.model_frcnn import FrcnnCounter
 from app.counting.model_yolo_head import YoloHeadCounter
 from app.config import Settings
+from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.counting")
 
@@ -59,8 +60,12 @@ class CountingDetector:
         self._heatmap = (
             self._primary if settings.count_model == "frcnn"
             else FrcnnCounter(device, settings))
-        # Сериализуем доступ к GPU между потоками воркеров (общий на оба backend'а).
-        self._lock = threading.Lock()
+        # Сериализуем доступ к модели между потоками воркеров — свой lock на
+        # каждый backend: медленный frcnn (heatmap) не должен задерживать
+        # основной подсчёт. Если frcnn и есть основной — объект один, lock тоже.
+        self._primary_lock = threading.Lock()
+        self._heatmap_lock = (
+            self._primary_lock if self._heatmap is self._primary else threading.Lock())
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -72,7 +77,19 @@ class CountingDetector:
             logger.info("Loading counting backend 'frcnn' for heatmap on device=%s ...",
                         self._device)
             self._heatmap.load()
+        self._warmup()
         logger.info("Counting model(s) ready.")
+
+    def _warmup(self) -> None:
+        """Первый прогон каждого backend'а на пустом кадре того же размера, что
+        присылает платформа (640 по ширине): ленивая инициализация CUDA/cuDNN
+        случается здесь, а не на первом запросе камеры."""
+        start = time.perf_counter()
+        blank = np.zeros((360, 640, 3), dtype=np.uint8)
+        self._primary.predict(blank)
+        if self._heatmap is not self._primary:
+            self._heatmap.predict(blank)
+        logger.info("Counting warm-up: %.0f ms", (time.perf_counter() - start) * 1000.0)
 
     @property
     def is_ready(self) -> bool:
@@ -93,14 +110,17 @@ class CountingDetector:
         Raises:
             InvalidImageError: если кадр не валидный base64/JPEG.
         """
-        backend = self._heatmap if for_heatmap else self._primary
+        if for_heatmap:
+            backend, lock, group = self._heatmap, self._heatmap_lock, "heatmap"
+        else:
+            backend, lock, group = self._primary, self._primary_lock, "counting"
         if not backend.is_ready:
             raise RuntimeError("Model is not loaded")
 
         start = time.perf_counter()
 
         bgr = self._decode(frame)
-        with self._lock:
+        with timed_lock(lock, group):
             boxes, scores = backend.predict(bgr)
 
         count = int(scores.shape[0])

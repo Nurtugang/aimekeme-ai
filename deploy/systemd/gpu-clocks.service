@@ -1,0 +1,18 @@
+# Persistence mode и фиксированные частоты GPU — до старта AI-API.
+# Без фиксации карта в простое уходит в P8 (~210 МГц), и первые запросы после
+# паузы в разы медленнее (docs/SCALING_TZ.md D12, §5.6). Настройка не
+# переживает перезагрузку, поэтому — юнит.
+[Unit]
+Description=GPU persistence mode + locked clocks for AI-API
+Before=aimekeme@ai-g0.service aimekeme@ai-g1a.service aimekeme@ai-g1b.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/aimekeme/gpu-clocks.env
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -lgc ${GPU_CLOCKS}
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target

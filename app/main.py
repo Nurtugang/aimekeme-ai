@@ -6,13 +6,15 @@
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import torch
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app import stats
 from app.counting.detector import CountingDetector
 from app.counting.router import router as counting_router
 from app.face.detector import FaceDetector
@@ -32,6 +34,7 @@ logging.basicConfig(
 )
 # huggingface_hub на каждой загрузке весов сыплет HTTP-запросами в INFO — это вода.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger("surveillance")
 
 
 def resolve_device(preference: str) -> torch.device:
@@ -44,6 +47,10 @@ def resolve_device(preference: str) -> torch.device:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     device = resolve_device(settings.device)
+    # На сервере несколько процессов, у каждого своя карта (CUDA_VISIBLE_DEVICES):
+    # по этой строке видно, какая именно.
+    logger.info("Device: %s (%s)", device,
+                torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU")
 
     fight = FightDetector(settings, device)
     fight.load()
@@ -80,6 +87,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def time_detect_requests(request: Request, call_next):
+    """Полное время запроса /detect/* — с разбором JSON и ожиданием свободного
+    потока, для GET /stats. Остальные пути не меряем: у /faces/{id} ключей было
+    бы столько же, сколько людей."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    if request.url.path.startswith("/detect/"):
+        stats.record(request.url.path, "total_ms", (time.perf_counter() - start) * 1000.0)
+    return response
+
+
 app.include_router(fight_router)
 app.include_router(face_router)
 app.include_router(fire_router)
@@ -112,3 +131,22 @@ def health() -> HealthResponse:
         models=models,
         version=settings.api_version,
     )
+
+
+class Percentiles(BaseModel):
+    count: int
+    p50: float
+    p95: float
+
+
+@app.get("/stats", response_model=dict[str, dict[str, Percentiles]], tags=["system"])
+def get_stats() -> dict[str, dict[str, Percentiles]]:
+    """Замеры с рестарта процесса, мс (docs/SCALING_TZ.md §4.4):
+
+    - `/detect/<name>` -> `total_ms` — полное время запроса;
+    - `<модель>` -> `lock_wait_ms` (ждал lock — очередь), `lock_held_ms`
+      (держал lock — сама модель).
+
+    count — всего замеров с рестарта; p50/p95 — по последним 2048.
+    """
+    return stats.snapshot()

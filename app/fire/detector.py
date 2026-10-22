@@ -28,6 +28,7 @@ from PIL import Image
 from app.config import Settings
 from app.fire.model_siglip2 import Siglip2FireClassifier
 from app.fire.model_yolo_dfire import YoloDfireDetector
+from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.fire")
 
@@ -63,7 +64,16 @@ class FireDetector:
         logger.info("Loading fire backend '%s' on device=%s ...",
                     self._settings.fire_model, self._device)
         self._backend.load()
+        self._warmup()
         logger.info("Fire model ready (use_tiling=%s).", self._settings.use_tiling)
+
+    def _warmup(self) -> None:
+        """Первый прогон на пустом кадре того же размера и с тем же тайлингом,
+        что присылает платформа (1280 по ширине): ленивая инициализация
+        CUDA/cuDNN случается здесь, а не на первом запросе камеры."""
+        start = time.perf_counter()
+        self.analyze(Image.new("RGB", (1280, 720)))
+        logger.info("Fire warm-up: %.0f ms", (time.perf_counter() - start) * 1000.0)
 
     @property
     def is_ready(self) -> bool:
@@ -87,7 +97,7 @@ class FireDetector:
         start = time.perf_counter()
 
         image = self._decode(frame)
-        with self._lock:
+        with timed_lock(self._lock, "fire"):
             scores, _ = self.analyze(image)
 
         label, confidence = self.decide(scores)

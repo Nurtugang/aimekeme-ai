@@ -20,6 +20,7 @@ import torch.nn.functional as F
 
 from app.fight.model import load_model, preprocess_frames
 from app.config import Settings
+from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.fight")
 
@@ -50,7 +51,17 @@ class FightDetector:
     def load(self) -> None:
         logger.info("Loading X3D-M on device=%s ...", self._device)
         self._model = load_model(self._device)
+        self._warmup()
         logger.info("Fight model ready.")
+
+    def _warmup(self) -> None:
+        """Первый прогон на пустом клипе: ленивая инициализация CUDA/cuDNN
+        случается здесь, а не на первом запросе камеры."""
+        start = time.perf_counter()
+        blank = [np.zeros((224, 224, 3), dtype=np.uint8)] * self._settings.expected_frames
+        with torch.inference_mode():
+            self._model(preprocess_frames(blank).to(self._device))
+        logger.info("Fight warm-up: %.0f ms", (time.perf_counter() - start) * 1000.0)
 
     @property
     def is_ready(self) -> bool:
@@ -76,7 +87,7 @@ class FightDetector:
         decoded = [self._decode_frame(raw, i) for i, raw in enumerate(frames)]
         tensor = preprocess_frames(decoded).to(self._device)
 
-        with self._lock, torch.inference_mode():
+        with timed_lock(self._lock, "fight"), torch.inference_mode():
             logits = self._model(tensor)
             probs = F.softmax(logits, dim=1)[0]
 

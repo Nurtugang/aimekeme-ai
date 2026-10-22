@@ -1,0 +1,29 @@
+# Процесс AI-API. Шаблон: экземпляр = имя файла настроек в /etc/aimekeme/,
+# например aimekeme@ai-g0 читает /etc/aimekeme/ai-g0.env (карта, порт).
+# Раскладка процессов по картам — docs/SCALING_TZ.md §5.1-5.2.
+[Unit]
+Description=AI-API aimekeme (%i)
+After=network-online.target gpu-clocks.service
+Wants=network-online.target gpu-clocks.service
+
+[Service]
+Type=simple
+User=vision
+Group=vision
+WorkingDirectory=/opt/aimekeme
+# Общие настройки моделей — /opt/aimekeme/.env (читает сам сервис),
+# свои у процесса — здесь: CUDA_VISIBLE_DEVICES, PORT, DEVICE.
+EnvironmentFile=/etc/aimekeme/%i.env
+# Кэш весов (HuggingFace, insightface, ultralytics) — в домашнем каталоге.
+Environment=HOME=/var/lib/vision
+ExecStart=/opt/aimekeme/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port ${PORT}
+# R3 в docs/SCALING_TZ.md: упавший процесс поднимается сам; загрузка моделей
+# с прогревом ~20-30 с, пока его запросы принимает резерв (nginx).
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=20
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

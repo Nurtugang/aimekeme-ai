@@ -26,6 +26,16 @@ logger = logging.getLogger("surveillance.face.model")
 # на каждом лице. Две landmark-модели нам не нужны и стоят 2.7 мс на лицо.
 _MODULES = ["detection", "recognition", "genderage"]
 
+# onnxruntime на CUDA перестраивает сеть при КАЖДОЙ смене размера батча, а не
+# только при первой (замер на RTX 4060 Ti, onnxruntime-gpu 1.23.2: смена числа
+# лиц 4<->8 стоит ArcFace ~40 мс, genderage 170-780 мс — и так на каждой смене).
+# cudnn_conv_algo_search это не лечит: DEFAULT убирает часть всплеска, но в 2-3
+# раза замедляет каждый прогон. Число лиц в кадре меняется постоянно, поэтому
+# размер батча постоянный: лица идут кусками ровно по _BATCH_SIZE, последний
+# добивается пустыми кропами. 8 — компромисс по замеру: 1-8 лиц ~12 мс,
+# 30 лиц ~48 мс на обе сети вместе.
+_BATCH_SIZE = 8
+
 
 def load_face_model(providers: list[str], ctx_id: int, det_size: int,
                     det_thresh: float) -> FaceAnalysis:
@@ -38,7 +48,7 @@ def load_face_model(providers: list[str], ctx_id: int, det_size: int,
 
 
 def detect_faces(app: FaceAnalysis, bgr: np.ndarray) -> list[Face]:
-    """Все лица кадра: детекция, затем каждая модель одним батчем на все лица.
+    """Все лица кадра: детекция, затем каждая модель батчами по _BATCH_SIZE.
 
     Замена app.get(), который гоняет recognition и genderage в цикле по одному
     лицу — на GPU это в 3-4 раза дороже. Объекты Face возвращаются те же.
@@ -60,11 +70,36 @@ def detect_faces(app: FaceAnalysis, bgr: np.ndarray) -> list[Face]:
     return faces
 
 
+def warmup(app: FaceAnalysis) -> None:
+    """Прогон того же пути, что у настоящего кадра: детектор на пустом кадре,
+    затем выравнивание + ArcFace + genderage на «лице»-заглушке (батч всегда
+    _BATCH_SIZE, одного прогона хватает). Гоняем рабочие функции, а не сети
+    напрямую: первый norm_crop сам по себе стоит ~250 мс (ленивые импорты
+    scikit-image)."""
+    det_w, det_h = app.det_model.input_size
+    blank = np.zeros((det_h, det_w, 3), dtype=np.uint8)
+    app.det_model.detect(blank, max_num=0, metric="default")
+    faces = [Face(bbox=np.array([0, 0, 112, 112], dtype=np.float32),
+                  kps=face_align.arcface_dst, det_score=1.0)]
+    _embed_batch(app.models["recognition"], blank, faces)
+    genderage = app.models.get("genderage")
+    if genderage is not None:
+        _genderage_batch(genderage, blank, faces)
+
+
+def _chunks(crops: list[np.ndarray]):
+    """Кропы кусками ровно по _BATCH_SIZE, последний добит пустыми (см. выше)."""
+    for i in range(0, len(crops), _BATCH_SIZE):
+        chunk = crops[i:i + _BATCH_SIZE]
+        yield chunk + [np.zeros_like(chunk[0])] * (_BATCH_SIZE - len(chunk))
+
+
 def _embed_batch(rec, bgr: np.ndarray, faces: list[Face]) -> None:
-    """ArcFace на все лица разом (выравнивание по 5 точкам, как в ArcFaceONNX.get)."""
+    """ArcFace на все лица (выравнивание по 5 точкам, как в ArcFaceONNX.get)."""
     size = rec.input_size[0]
     crops = [face_align.norm_crop(bgr, landmark=f.kps, image_size=size) for f in faces]
-    for face, feat in zip(faces, rec.get_feat(crops)):
+    feats = np.concatenate([rec.get_feat(chunk) for chunk in _chunks(crops)])
+    for face, feat in zip(faces, feats):
         face.embedding = feat.flatten()
 
 
@@ -78,10 +113,14 @@ def _genderage_batch(model, bgr: np.ndarray, faces: list[Face]) -> None:
         scale = size / (max(x2 - x1, y2 - y1) * 1.5)
         crops.append(face_align.transform(bgr, center, size, scale, 0)[0])
 
-    blob = cv2.dnn.blobFromImages(
-        crops, 1.0 / model.input_std, model.input_size,
-        (model.input_mean,) * 3, swapRB=True)
-    preds = model.session.run(model.output_names, {model.input_name: blob})[0]
+    preds = np.concatenate([_run_genderage(model, chunk) for chunk in _chunks(crops)])
     for face, pred in zip(faces, preds):
         face.gender = int(np.argmax(pred[:2]))
         face.age = int(np.round(pred[2] * 100))
+
+
+def _run_genderage(model, crops: list[np.ndarray]) -> np.ndarray:
+    blob = cv2.dnn.blobFromImages(
+        crops, 1.0 / model.input_std, model.input_size,
+        (model.input_mean,) * 3, swapRB=True)
+    return model.session.run(model.output_names, {model.input_name: blob})[0]

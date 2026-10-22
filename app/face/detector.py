@@ -1,10 +1,20 @@
 """Распознавание лиц: ArcFace (buffalo_l, insightface) + мини-база с N эталонами.
 
 База лиц — в папке known_faces/:
-- faces.db   — SQLite с метаданными: faces(id, name, created_at). ID автоинкрементны
-               и не переиспользуются (на них ссылается журнал событий платформы);
-- <id>_<k>.jpg — фото человека, по одному файлу на эталон (k = 1..N);
-- эмбеддинги — в памяти, считаются на старте из <id>_<k>.jpg.
+- faces.db   — SQLite:
+    faces(id, name, created_at) — ID автоинкрементны и не переиспользуются (на
+      них ссылается журнал событий платформы);
+    embeddings(face_id, file, vector) — эмбеддинг каждого эталона, считается
+      один раз при записи;
+    meta(gallery_version) — растёт при каждом изменении базы;
+- <id>_<k>.jpg — фото человека, по одному файлу на эталон (k = 1..N).
+
+Галерея в памяти — копия таблицы embeddings. На сервере несколько процессов
+AI-API работают с общей known_faces/ (docs/SCALING_TZ.md): пишет в базу только
+один (nginx шлёт туда все POST/DELETE /faces*), остальные не чаще раза в
+_GALLERY_CHECK_S сверяют gallery_version и перечитывают эмбеддинги, если она
+изменилась. База старой версии (без embeddings) переводится при старте:
+эмбеддинги один раз считаются по jpg и сохраняются.
 
 Поддержка нескольких эталонов на человека: при матче берём МАКСИМУМ косинусной
 близости по всем эталонам человека (не среднее). ArcFace разводит разных людей
@@ -34,14 +44,18 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from app.face.model import detect_faces, load_face_model
+from app.face.model import detect_faces, load_face_model, warmup
 from app.config import Settings
+from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.face")
 
 _DATA_URI_MARKER = "base64,"
 _DB_FILE = "faces.db"
 _UNKNOWN = "unknown"
+# Как часто сверять версию галереи с базой (R5 в docs/SCALING_TZ.md: новое лицо
+# видно всем процессам не позже 5 с).
+_GALLERY_CHECK_S = 1.0
 
 
 class InvalidImageError(ValueError):
@@ -65,10 +79,15 @@ class FaceDetector:
         self._settings = settings
         self._app = None
         self._device_str = "cpu"
-        # хот-патч распознавания в памяти; БД + jpg — персистентность:
-        self._gallery: dict[int, np.ndarray] = {}  # id -> (k, 512) normed embeddings
-        self._names: dict[int, str] = {}           # id -> имя (для ответа)
-        self._lock = threading.Lock()
+        # id -> (имя, (k, 512) normed embeddings). Не мутируется, а подменяется
+        # целиком одним присваиванием — читатель (_match) всегда видит
+        # согласованную пару имя/эмбеддинги.
+        self._gallery: dict[int, tuple[str, np.ndarray]] = {}
+        self._gallery_version = -1
+        self._gallery_checked_at = 0.0
+        self._lock = threading.Lock()          # GPU-инференс
+        self._gallery_lock = threading.Lock()  # перечитывание галереи из базы
+        self._write_lock = threading.Lock()    # записи в базу (enroll/delete)
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -77,13 +96,30 @@ class FaceDetector:
         logger.info("Loading face model (buffalo_l), ctx_id=%d ...", ctx_id)
         self._app = load_face_model(
             providers, ctx_id, self._settings.face_det_size, self._settings.face_det_thresh)
-        # фактически активный провайдер (CUDA мог тихо откатиться на CPU)
-        rec = self._app.models.get("recognition")
-        active = rec.session.get_providers() if rec else []
-        self._device_str = "cuda" if "CUDAExecutionProvider" in active else "cpu"
-        self._load_gallery()
+        self._check_providers(providers)
+        start = time.perf_counter()
+        warmup(self._app)
+        logger.info("Face warm-up: %.0f ms", (time.perf_counter() - start) * 1000.0)
+        self._init_storage()
         logger.info("Face detector ready on %s. Known faces: %d %s",
-                    self._device_str, len(self._names), list(self._names.values()))
+                    self._device_str, len(self._gallery),
+                    [name for name, _ in self._gallery.values()])
+
+    def _check_providers(self, providers: list[str]) -> None:
+        """Фактически активный провайдер каждой сети пака. onnxruntime при сбое
+        CUDA молча откатывается на CPU, а на CPU face не тянет даже текущую
+        нагрузку. Поэтому если просили CUDA, а хоть одна сеть на CPU, процесс
+        не стартует (R7 в docs/SCALING_TZ.md)."""
+        if "CUDAExecutionProvider" not in providers:
+            self._device_str = "cpu"
+            return
+        on_cpu = [name for name, model in self._app.models.items()
+                  if "CUDAExecutionProvider" not in model.session.get_providers()]
+        if on_cpu:
+            raise RuntimeError(
+                f"face: CUDA requested (device={self._settings.device}), but onnxruntime "
+                f"runs {on_cpu} on CPU — check onnxruntime-gpu and CUDA libraries")
+        self._device_str = "cuda"
 
     def _resolve_device(self) -> tuple[list[str], int]:
         dev = self._settings.device
@@ -110,17 +146,48 @@ class FaceDetector:
     # --- storage (SQLite + <id>_<k>.jpg) ----------------------------------
 
     def _connect(self) -> sqlite3.Connection:
-        path = Path(self._settings.known_faces_dir)
-        path.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path / _DB_FILE)
+        conn = sqlite3.connect(Path(self._settings.known_faces_dir) / _DB_FILE)
         conn.row_factory = sqlite3.Row
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS faces ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "name TEXT NOT NULL UNIQUE, "
-            "created_at TEXT NOT NULL)"
-        )
         return conn
+
+    def _init_storage(self) -> None:
+        """Схема, WAL (читатели из других процессов не ждут писателя), перевод
+        старой базы без эмбеддингов и первая загрузка галереи."""
+        Path(self._settings.known_faces_dir).mkdir(parents=True, exist_ok=True)
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS faces ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT NOT NULL UNIQUE, "
+                "created_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS embeddings ("
+                "face_id INTEGER NOT NULL, "
+                "file TEXT NOT NULL, "
+                "vector BLOB NOT NULL, "
+                "PRIMARY KEY (face_id, file))"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta ("
+                "key TEXT PRIMARY KEY, "
+                "value INTEGER NOT NULL)"
+            )
+            conn.commit()
+        self._migrate_embeddings()
+        self._reload_gallery()
+
+    @staticmethod
+    def _read_version(conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'gallery_version'").fetchone()
+        return row["value"] if row else 0
+
+    @staticmethod
+    def _bump_version(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('gallery_version', 1) "
+            "ON CONFLICT(key) DO UPDATE SET value = value + 1")
 
     def _image_paths(self, face_id: int) -> list[Path]:
         """Все фото-эталоны человека: <id>_<k>.jpg, отсортированы по k."""
@@ -134,17 +201,21 @@ class FaceDetector:
 
     # --- gallery ----------------------------------------------------------
 
-    def _load_gallery(self) -> None:
-        self._gallery = {}
-        self._names = {}
+    def _migrate_embeddings(self) -> None:
+        """Эталоны (jpg), для которых в базе ещё нет эмбеддинга, — база от
+        версии, где эмбеддинги жили только в памяти. Считаем один раз и
+        сохраняем. INSERT OR IGNORE — на случай, если два процесса стартуют
+        одновременно и посчитают одно и то же."""
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT id, name FROM faces ORDER BY id").fetchall()
+            ids = [r["id"] for r in conn.execute("SELECT id FROM faces ORDER BY id")]
+            known = {(r["face_id"], r["file"])
+                     for r in conn.execute("SELECT face_id, file FROM embeddings")}
 
-        for row in rows:
-            face_id, name = row["id"], row["name"]
-            self._names[face_id] = name
-            embs = []
+        rows = []
+        for face_id in ids:
             for path in self._image_paths(face_id):
+                if (face_id, path.name) in known:
+                    continue
                 bgr = cv2.imread(str(path))
                 if bgr is None:
                     logger.warning("Cannot read %s — пропускаю эталон", path)
@@ -153,15 +224,58 @@ class FaceDetector:
                 if emb is None:
                     logger.warning("No single face in %s — пропускаю эталон", path)
                     continue
-                embs.append(emb)
-            if embs:
-                self._gallery[face_id] = np.stack(embs)
-            else:
-                logger.warning("Face id=%d (%s): ни одного валидного эталона", face_id, name)
+                rows.append((face_id, path.name, emb.tobytes()))
+        if not rows:
+            return
+
+        with closing(self._connect()) as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO embeddings(face_id, file, vector) VALUES(?, ?, ?)", rows)
+            self._bump_version(conn)
+            conn.commit()
+        logger.info("Face DB: saved embeddings for %d existing photo(s)", len(rows))
+
+    def _reload_gallery(self) -> None:
+        """Галерея из базы. Версию читаем ДО эмбеддингов: если между чтениями
+        кто-то запишет, получим новые эмбеддинги со старой версией и просто
+        перечитаем ещё раз на следующей сверке. Наоборот (новая версия, старые
+        данные) не бывает."""
+        with self._gallery_lock:
+            with closing(self._connect()) as conn:
+                version = self._read_version(conn)
+                names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM faces")}
+                rows = conn.execute("SELECT face_id, vector FROM embeddings").fetchall()
+
+            embs: dict[int, list[np.ndarray]] = {}
+            for r in rows:
+                if r["face_id"] in names:
+                    embs.setdefault(r["face_id"], []).append(
+                        np.frombuffer(r["vector"], dtype=np.float32))
+            self._gallery = {face_id: (names[face_id], np.stack(vectors))
+                             for face_id, vectors in embs.items()}
+            self._gallery_version = version
+
+    def _sync_gallery(self) -> None:
+        """Подхватить изменения базы, сделанные процессом-писателем: не чаще раза
+        в _GALLERY_CHECK_S и одним потоком — остальные запросы не ждут."""
+        if time.monotonic() - self._gallery_checked_at < _GALLERY_CHECK_S:
+            return
+        if not self._gallery_lock.acquire(blocking=False):
+            return
+        try:
+            self._gallery_checked_at = time.monotonic()
+            with closing(self._connect()) as conn:
+                version = self._read_version(conn)
+        finally:
+            self._gallery_lock.release()
+        if version != self._gallery_version:
+            self._reload_gallery()
+            logger.info("Face gallery reloaded: version %d, known faces %d",
+                        self._gallery_version, len(self._gallery))
 
     def _get_faces(self, bgr: np.ndarray) -> list:
         """Все лица на кадре (с фильтром по det_thresh), под локом GPU."""
-        with self._lock:
+        with timed_lock(self._lock, "face"):
             faces = detect_faces(self._app, bgr)
         return self._filter(faces)
 
@@ -189,22 +303,21 @@ class FaceDetector:
             raise EnrollmentError("no usable face found (need exactly one clear face per photo)")
 
         created_at = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            try:
-                with closing(self._connect()) as conn:
+        with self._write_lock:
+            with closing(self._connect()) as conn:
+                try:
                     cur = conn.execute(
                         "INSERT INTO faces(name, created_at) VALUES(?, ?)", (name, created_at))
-                    conn.commit()
-                    face_id = cur.lastrowid
-            except sqlite3.IntegrityError as exc:
-                raise DuplicateNameError(f"name '{name}' already exists") from exc
+                except sqlite3.IntegrityError as exc:
+                    raise DuplicateNameError(f"name '{name}' already exists") from exc
+                face_id = cur.lastrowid
+                self._persist(conn, face_id, prepared)
+                self._bump_version(conn)
+                conn.commit()
+            self._reload_gallery()
 
-            embs = self._persist(face_id, prepared)
-            self._names[face_id] = name
-            self._gallery[face_id] = embs
-
-        logger.info("Enrolled face id=%d name=%s with %d photo(s)", face_id, name, len(embs))
-        return {"id": face_id, "name": name, "created_at": created_at, "photos": len(embs)}
+        logger.info("Enrolled face id=%d name=%s with %d photo(s)", face_id, name, len(prepared))
+        return {"id": face_id, "name": name, "created_at": created_at, "photos": len(prepared)}
 
     def add_images(self, face_id: int, images: list[bytes]) -> dict:
         """Догружает фото существующему человеку."""
@@ -218,31 +331,34 @@ class FaceDetector:
         if not prepared:
             raise EnrollmentError("no usable face found (need exactly one clear face per photo)")
 
-        with self._lock:
-            new_embs = self._persist(face_id, prepared)
-            existing = self._gallery.get(face_id)
-            self._gallery[face_id] = (
-                new_embs if existing is None else np.concatenate([existing, new_embs]))
-            total = len(self._gallery[face_id])
+        with self._write_lock:
+            with closing(self._connect()) as conn:
+                self._persist(conn, face_id, prepared)
+                self._bump_version(conn)
+                conn.commit()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM embeddings WHERE face_id = ?", (face_id,)).fetchone()[0]
+            self._reload_gallery()
 
-        logger.info("Added %d photo(s) to face id=%d (total %d)", len(new_embs), face_id, total)
+        logger.info("Added %d photo(s) to face id=%d (total %d)", len(prepared), face_id, total)
         return {"id": face_id, "name": row["name"],
                 "created_at": row["created_at"], "photos": total}
 
     def delete_face(self, face_id: int) -> None:
-        with self._lock:
+        with self._write_lock:
             with closing(self._connect()) as conn:
-                cur = conn.execute("DELETE FROM faces WHERE id = ?", (face_id,))
+                row = conn.execute("SELECT name FROM faces WHERE id = ?", (face_id,)).fetchone()
+                if row is None:
+                    raise FaceNotFoundError(f"face id={face_id} not found")
+                conn.execute("DELETE FROM faces WHERE id = ?", (face_id,))
+                conn.execute("DELETE FROM embeddings WHERE face_id = ?", (face_id,))
+                self._bump_version(conn)
                 conn.commit()
-            if cur.rowcount == 0:
-                raise FaceNotFoundError(f"face id={face_id} not found")
-
-            name = self._names.pop(face_id, None)
-            self._gallery.pop(face_id, None)
             for path in self._image_paths(face_id):
                 path.unlink(missing_ok=True)
+            self._reload_gallery()
 
-        logger.info("Deleted face id=%d name=%s", face_id, name)
+        logger.info("Deleted face id=%d name=%s", face_id, row["name"])
 
     def list_faces(self) -> list[dict]:
         with closing(self._connect()) as conn:
@@ -271,15 +387,16 @@ class FaceDetector:
                 out.append((pil, emb))
         return out
 
-    def _persist(self, face_id: int, prepared: list[tuple[Image.Image, np.ndarray]]) -> np.ndarray:
-        """Сохраняет фото как <id>_<k>.jpg и возвращает их эмбеддинги (m, 512)."""
-        directory = Path(self._settings.known_faces_dir)
-        directory.mkdir(parents=True, exist_ok=True)
-        embs = []
+    def _persist(self, conn: sqlite3.Connection, face_id: int,
+                 prepared: list[tuple[Image.Image, np.ndarray]]) -> None:
+        """Сохраняет фото как <id>_<k>.jpg, а их эмбеддинги — в embeddings
+        (в транзакции conn, коммитит вызывающий)."""
         for pil, emb in prepared:
-            pil.save(self._next_image_path(face_id), "JPEG", quality=95)
-            embs.append(emb)
-        return np.stack(embs)
+            path = self._next_image_path(face_id)
+            pil.save(path, "JPEG", quality=95)
+            conn.execute(
+                "INSERT INTO embeddings(face_id, file, vector) VALUES(?, ?, ?)",
+                (face_id, path.name, emb.tobytes()))
 
     # --- inference ---------------------------------------------------------
 
@@ -288,6 +405,7 @@ class FaceDetector:
             raise RuntimeError("Model is not loaded")
 
         start = time.perf_counter()
+        self._sync_gallery()
         bgr = self._decode(frame)
         faces_out = self._format(self._get_faces(bgr))
 
@@ -315,10 +433,11 @@ class FaceDetector:
             raise RuntimeError("Model is not loaded")
 
         start = time.perf_counter()
+        self._sync_gallery()
         # Декодируем всё заранее: битый кадр упадёт, не заняв GPU.
         bgrs = [self._decode(raw, i) for i, raw in enumerate(frames)]
 
-        with self._lock:
+        with timed_lock(self._lock, "face"):
             per_frame = [detect_faces(self._app, bgr) for bgr in bgrs]
 
         results = []
@@ -365,13 +484,15 @@ class FaceDetector:
     def _match(self, embedding: np.ndarray) -> tuple[str, int | None, float]:
         """Максимум косинусной близости по всем эталонам каждого человека."""
         e = np.asarray(embedding, dtype=np.float32)
-        best_id, best = None, -1.0
-        for face_id, embs in list(self._gallery.items()):  # снимок: безопасно при конкурентном enroll
+        best_id, best_name, best = None, _UNKNOWN, -1.0
+        # self._gallery подменяется целиком и не мутируется — обход безопасен
+        # при конкурентной перезагрузке.
+        for face_id, (name, embs) in self._gallery.items():
             score = float(np.max(embs @ e))
             if score > best:
-                best_id, best = face_id, score
+                best_id, best_name, best = face_id, name, score
         if best_id is not None and best >= self._settings.face_match_threshold:
-            return self._names[best_id], best_id, best
+            return best_name, best_id, best
         return _UNKNOWN, None, (best if best_id is not None else 0.0)
 
     # --- helpers -----------------------------------------------------------
