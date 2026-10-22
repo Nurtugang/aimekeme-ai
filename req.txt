@@ -39,6 +39,11 @@ nvidia-nccl-cu12==2.27.5; sys_platform == "linux"
 nvidia-nvjitlink-cu12==12.8.93
 nvidia-nvshmem-cu12==3.3.20; sys_platform == "linux"
 nvidia-nvtx-cu12==12.8.90
+# onnx, scikit-image, scipy -- зависимости insightface: его ставим с --no-deps
+# (иначе тянет CPU-onnxruntime, см. README), поэтому они здесь явно.
+onnx==1.22.0
+scikit-image==0.26.0
+scipy==1.18.1
 opencv-python==4.13.0.92
 packaging==26.2
 parameterized==0.9.0
