@@ -11,6 +11,8 @@ Keypoints (плечи/бёдра/колени) нужны детектору, ч
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -22,7 +24,10 @@ _MIN_KEYPOINT_CONF = 0.3
 _PERSON_CLASS_ID = 0
 # Трекер задаём явно: по умолчанию ultralytics 8.4 берёт свой TRACKTRACK, а он
 # в плотной аудитории отдаёт id только 9 людям из 15 (замерено на test/01-09).
-_TRACKER_CFG = "botsort.yaml"
+# Свой tracker.yaml (не встроенный botsort.yaml) -- под статичную камеру сверху
+# и сидящих склонившихся людей: длиннее track_buffer, мягче match_thresh, без
+# компенсации движения камеры. Подробности и цифры -- в самом файле.
+_TRACKER_CFG = str(Path(__file__).resolve().parent / "tracker.yaml")
 
 
 def load_persons_model(weights: str, device: torch.device):
