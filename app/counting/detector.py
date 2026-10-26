@@ -60,9 +60,7 @@ class CountingDetector:
         self._heatmap = (
             self._primary if settings.count_model == "frcnn"
             else FrcnnCounter(device, settings))
-        # Сериализуем доступ к модели между потоками воркеров — свой lock на
-        # каждый backend: медленный frcnn (heatmap) не должен задерживать
-        # основной подсчёт. Если frcnn и есть основной — объект один, lock тоже.
+        # свой lock на backend: медленный frcnn (heatmap) не держит подсчёт
         self._primary_lock = threading.Lock()
         self._heatmap_lock = (
             self._primary_lock if self._heatmap is self._primary else threading.Lock())
@@ -81,9 +79,7 @@ class CountingDetector:
         logger.info("Counting model(s) ready.")
 
     def _warmup(self) -> None:
-        """Первый прогон каждого backend'а на пустом кадре того же размера, что
-        присылает платформа (640 по ширине): ленивая инициализация CUDA/cuDNN
-        случается здесь, а не на первом запросе камеры."""
+        """Прогрев на пустом кадре 640 по ширине"""
         start = time.perf_counter()
         blank = np.zeros((360, 640, 3), dtype=np.uint8)
         self._primary.predict(blank)

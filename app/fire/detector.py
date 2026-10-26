@@ -68,9 +68,7 @@ class FireDetector:
         logger.info("Fire model ready (use_tiling=%s).", self._settings.use_tiling)
 
     def _warmup(self) -> None:
-        """Первый прогон на пустом кадре того же размера и с тем же тайлингом,
-        что присылает платформа (1280 по ширине): ленивая инициализация
-        CUDA/cuDNN случается здесь, а не на первом запросе камеры."""
+        """Прогрев на пустом кадре 1280 по ширине, с тайлингом"""
         start = time.perf_counter()
         self.analyze(Image.new("RGB", (1280, 720)))
         logger.info("Fire warm-up: %.0f ms", (time.perf_counter() - start) * 1000.0)

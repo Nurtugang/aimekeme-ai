@@ -232,9 +232,7 @@ class PersonsDetector:
         logger.info("Persons detector ready.")
 
     def _warmup(self) -> None:
-        """Первый прогон на пустом кадре: ленивая инициализация CUDA/cuDNN и
-        сборка предиктора/трекера ultralytics случаются здесь, а не на первом
-        запросе камеры. Состояние трекера detect() сбрасывает сам."""
+        """Прогрев на пустом кадре"""
         start = time.perf_counter()
         blank = np.zeros((720, 1280, 3), dtype=np.uint8)
         detect(self._model, [blank], self._settings.persons_conf_thresh, self._device)

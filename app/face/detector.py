@@ -9,12 +9,9 @@
     meta(gallery_version) — растёт при каждом изменении базы;
 - <id>_<k>.jpg — фото человека, по одному файлу на эталон (k = 1..N).
 
-Галерея в памяти — копия таблицы embeddings. На сервере несколько процессов
-AI-API работают с общей known_faces/ (docs/SCALING_TZ.md): пишет в базу только
-один (nginx шлёт туда все POST/DELETE /faces*), остальные не чаще раза в
-_GALLERY_CHECK_S сверяют gallery_version и перечитывают эмбеддинги, если она
-изменилась. База старой версии (без embeddings) переводится при старте:
-эмбеддинги один раз считаются по jpg и сохраняются.
+Галерея в памяти — копия embeddings. Пишет в базу один процесс, остальные
+раз в _GALLERY_CHECK_S сверяют gallery_version. База без embeddings
+переводится при старте.
 
 Поддержка нескольких эталонов на человека: при матче берём МАКСИМУМ косинусной
 близости по всем эталонам человека (не среднее). ArcFace разводит разных людей
@@ -53,8 +50,6 @@ logger = logging.getLogger("surveillance.face")
 _DATA_URI_MARKER = "base64,"
 _DB_FILE = "faces.db"
 _UNKNOWN = "unknown"
-# Как часто сверять версию галереи с базой (R5 в docs/SCALING_TZ.md: новое лицо
-# видно всем процессам не позже 5 с).
 _GALLERY_CHECK_S = 1.0
 
 
@@ -79,9 +74,7 @@ class FaceDetector:
         self._settings = settings
         self._app = None
         self._device_str = "cpu"
-        # id -> (имя, (k, 512) normed embeddings). Не мутируется, а подменяется
-        # целиком одним присваиванием — читатель (_match) всегда видит
-        # согласованную пару имя/эмбеддинги.
+        # id -> (имя, (k, 512) embeddings); подменяется целиком, не мутируется
         self._gallery: dict[int, tuple[str, np.ndarray]] = {}
         self._gallery_version = -1
         self._gallery_checked_at = 0.0
@@ -106,10 +99,7 @@ class FaceDetector:
                     [name for name, _ in self._gallery.values()])
 
     def _check_providers(self, providers: list[str]) -> None:
-        """Фактически активный провайдер каждой сети пака. onnxruntime при сбое
-        CUDA молча откатывается на CPU, а на CPU face не тянет даже текущую
-        нагрузку. Поэтому если просили CUDA, а хоть одна сеть на CPU, процесс
-        не стартует (R7 в docs/SCALING_TZ.md)."""
+        """Просили CUDA, а onnxruntime тихо откатил сеть на CPU — не стартуем"""
         if "CUDAExecutionProvider" not in providers:
             self._device_str = "cpu"
             return
@@ -151,8 +141,7 @@ class FaceDetector:
         return conn
 
     def _init_storage(self) -> None:
-        """Схема, WAL (читатели из других процессов не ждут писателя), перевод
-        старой базы без эмбеддингов и первая загрузка галереи."""
+        """Схема, WAL, перевод старой базы, первая загрузка галереи"""
         Path(self._settings.known_faces_dir).mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -202,10 +191,7 @@ class FaceDetector:
     # --- gallery ----------------------------------------------------------
 
     def _migrate_embeddings(self) -> None:
-        """Эталоны (jpg), для которых в базе ещё нет эмбеддинга, — база от
-        версии, где эмбеддинги жили только в памяти. Считаем один раз и
-        сохраняем. INSERT OR IGNORE — на случай, если два процесса стартуют
-        одновременно и посчитают одно и то же."""
+        """Посчитать эмбеддинги для фото, у которых их ещё нет в базе"""
         with closing(self._connect()) as conn:
             ids = [r["id"] for r in conn.execute("SELECT id FROM faces ORDER BY id")]
             known = {(r["face_id"], r["file"])
@@ -236,10 +222,7 @@ class FaceDetector:
         logger.info("Face DB: saved embeddings for %d existing photo(s)", len(rows))
 
     def _reload_gallery(self) -> None:
-        """Галерея из базы. Версию читаем ДО эмбеддингов: если между чтениями
-        кто-то запишет, получим новые эмбеддинги со старой версией и просто
-        перечитаем ещё раз на следующей сверке. Наоборот (новая версия, старые
-        данные) не бывает."""
+        """Галерея из базы; версию читаем до эмбеддингов"""
         with self._gallery_lock:
             with closing(self._connect()) as conn:
                 version = self._read_version(conn)
@@ -256,8 +239,7 @@ class FaceDetector:
             self._gallery_version = version
 
     def _sync_gallery(self) -> None:
-        """Подхватить изменения базы, сделанные процессом-писателем: не чаще раза
-        в _GALLERY_CHECK_S и одним потоком — остальные запросы не ждут."""
+        """Подхватить изменения базы от процесса-писателя"""
         if time.monotonic() - self._gallery_checked_at < _GALLERY_CHECK_S:
             return
         if not self._gallery_lock.acquire(blocking=False):
@@ -389,8 +371,7 @@ class FaceDetector:
 
     def _persist(self, conn: sqlite3.Connection, face_id: int,
                  prepared: list[tuple[Image.Image, np.ndarray]]) -> None:
-        """Сохраняет фото как <id>_<k>.jpg, а их эмбеддинги — в embeddings
-        (в транзакции conn, коммитит вызывающий)."""
+        """Фото -> <id>_<k>.jpg, эмбеддинги -> embeddings (коммитит вызывающий)"""
         for pil, emb in prepared:
             path = self._next_image_path(face_id)
             pil.save(path, "JPEG", quality=95)
@@ -485,8 +466,6 @@ class FaceDetector:
         """Максимум косинусной близости по всем эталонам каждого человека."""
         e = np.asarray(embedding, dtype=np.float32)
         best_id, best_name, best = None, _UNKNOWN, -1.0
-        # self._gallery подменяется целиком и не мутируется — обход безопасен
-        # при конкурентной перезагрузке.
         for face_id, (name, embs) in self._gallery.items():
             score = float(np.max(embs @ e))
             if score > best:

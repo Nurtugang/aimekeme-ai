@@ -1,11 +1,4 @@
-"""Замеры времени для GET /stats: сколько запрос ждал lock и сколько его держал.
-
-Отличить очередь от медленной модели можно только так: растёт ожидание lock —
-не хватает процессов (или батча), растёт время под lock — медленная модель или
-занятая GPU. Хранятся последние _WINDOW замеров на метрику, в памяти процесса;
-при рестарте всё сбрасывается. Зачем это нужно и как читать — docs/SCALING_TZ.md
-§3, §4.4.
-"""
+"""Замеры для GET /stats: ожидание lock (очередь) и время под lock (модель)"""
 
 from __future__ import annotations
 
@@ -30,8 +23,7 @@ def record(group: str, metric: str, ms: float) -> None:
 
 @contextmanager
 def timed_lock(lock: threading.Lock, group: str):
-    """`with timed_lock(self._lock, "fight"):` вместо `with self._lock:` —
-    то же самое, плюс замер ожидания lock и времени под ним."""
+    """`with timed_lock(self._lock, "fight"):` — lock плюс замер"""
     t0 = time.perf_counter()
     with lock:
         t1 = time.perf_counter()
@@ -44,8 +36,7 @@ def timed_lock(lock: threading.Lock, group: str):
 
 
 def snapshot() -> dict[str, dict[str, dict[str, float]]]:
-    """{group: {metric: {count, p50, p95}}}. count — всего с рестарта,
-    перцентили — по последним _WINDOW замерам."""
+    """{group: {metric: {count, p50, p95}}}"""
     with _guard:
         data = {key: sorted(values) for key, values in _samples.items()}
         counts = dict(_counts)

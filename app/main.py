@@ -47,8 +47,6 @@ def resolve_device(preference: str) -> torch.device:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     device = resolve_device(settings.device)
-    # На сервере несколько процессов, у каждого своя карта (CUDA_VISIBLE_DEVICES):
-    # по этой строке видно, какая именно.
     logger.info("Device: %s (%s)", device,
                 torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU")
 
@@ -89,9 +87,7 @@ app = FastAPI(
 
 @app.middleware("http")
 async def time_detect_requests(request: Request, call_next):
-    """Полное время запроса /detect/* — с разбором JSON и ожиданием свободного
-    потока, для GET /stats. Остальные пути не меряем: у /faces/{id} ключей было
-    бы столько же, сколько людей."""
+    """Полное время запроса /detect/* для GET /stats"""
     start = time.perf_counter()
     response = await call_next(request)
     if request.url.path.startswith("/detect/"):
@@ -141,12 +137,5 @@ class Percentiles(BaseModel):
 
 @app.get("/stats", response_model=dict[str, dict[str, Percentiles]], tags=["system"])
 def get_stats() -> dict[str, dict[str, Percentiles]]:
-    """Замеры с рестарта процесса, мс (docs/SCALING_TZ.md §4.4):
-
-    - `/detect/<name>` -> `total_ms` — полное время запроса;
-    - `<модель>` -> `lock_wait_ms` (ждал lock — очередь), `lock_held_ms`
-      (держал lock — сама модель).
-
-    count — всего замеров с рестарта; p50/p95 — по последним 2048.
-    """
+    """Замеры с рестарта, мс: total_ms по /detect/*, lock_wait_ms и lock_held_ms по моделям"""
     return stats.snapshot()

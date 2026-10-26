@@ -55,8 +55,7 @@ class FightDetector:
         logger.info("Fight model ready.")
 
     def _warmup(self) -> None:
-        """Первый прогон на пустом клипе: ленивая инициализация CUDA/cuDNN
-        случается здесь, а не на первом запросе камеры."""
+        """Прогрев на пустом клипе"""
         start = time.perf_counter()
         blank = [np.zeros((224, 224, 3), dtype=np.uint8)] * self._settings.expected_frames
         with torch.inference_mode():

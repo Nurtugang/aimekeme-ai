@@ -26,14 +26,8 @@ logger = logging.getLogger("surveillance.face.model")
 # на каждом лице. Две landmark-модели нам не нужны и стоят 2.7 мс на лицо.
 _MODULES = ["detection", "recognition", "genderage"]
 
-# onnxruntime на CUDA перестраивает сеть при КАЖДОЙ смене размера батча, а не
-# только при первой (замер на RTX 4060 Ti, onnxruntime-gpu 1.23.2: смена числа
-# лиц 4<->8 стоит ArcFace ~40 мс, genderage 170-780 мс — и так на каждой смене).
-# cudnn_conv_algo_search это не лечит: DEFAULT убирает часть всплеска, но в 2-3
-# раза замедляет каждый прогон. Число лиц в кадре меняется постоянно, поэтому
-# размер батча постоянный: лица идут кусками ровно по _BATCH_SIZE, последний
-# добивается пустыми кропами. 8 — компромисс по замеру: 1-8 лиц ~12 мс,
-# 30 лиц ~48 мс на обе сети вместе.
+# Постоянный размер батча: onnxruntime перестраивает сеть на каждой смене
+# размера (смена числа лиц стоила до 780 мс). Лица идут кусками по 8.
 _BATCH_SIZE = 8
 
 
@@ -71,11 +65,7 @@ def detect_faces(app: FaceAnalysis, bgr: np.ndarray) -> list[Face]:
 
 
 def warmup(app: FaceAnalysis) -> None:
-    """Прогон того же пути, что у настоящего кадра: детектор на пустом кадре,
-    затем выравнивание + ArcFace + genderage на «лице»-заглушке (батч всегда
-    _BATCH_SIZE, одного прогона хватает). Гоняем рабочие функции, а не сети
-    напрямую: первый norm_crop сам по себе стоит ~250 мс (ленивые импорты
-    scikit-image)."""
+    """Прогрев рабочим путём (детектор, выравнивание, ArcFace, genderage) на заглушке"""
     det_w, det_h = app.det_model.input_size
     blank = np.zeros((det_h, det_w, 3), dtype=np.uint8)
     app.det_model.detect(blank, max_num=0, metric="default")
@@ -88,7 +78,7 @@ def warmup(app: FaceAnalysis) -> None:
 
 
 def _chunks(crops: list[np.ndarray]):
-    """Кропы кусками ровно по _BATCH_SIZE, последний добит пустыми (см. выше)."""
+    """Кропы кусками по _BATCH_SIZE, последний добит пустыми"""
     for i in range(0, len(crops), _BATCH_SIZE):
         chunk = crops[i:i + _BATCH_SIZE]
         yield chunk + [np.zeros_like(chunk[0])] * (_BATCH_SIZE - len(chunk))
