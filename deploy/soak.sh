@@ -31,8 +31,16 @@ while true; do
     for s in $SERVICES; do
         mem=$(systemctl show -p MemoryCurrent --value "$s")
         restarts=$(systemctl show -p NRestarts --value "$s")
-        line="$line | $s mem=$(( ${mem:-0} / 1048576 ))MB restarts=$restarts"
+        # anon — память программ (утечка видна здесь), file — кэш файлов (не утечка)
+        stat="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$s")/memory.stat"
+        anon=$(awk '$1=="anon" {print int($2/1048576)}' "$stat" 2>/dev/null)
+        file=$(awk '$1=="file" {print int($2/1048576)}' "$stat" 2>/dev/null)
+        line="$line | $s mem=$(( ${mem:-0} / 1048576 ))MB anon=${anon}MB file=${file}MB restarts=$restarts"
     done
+    # внутри vision-backend: сам python и 23 ffmpeg по отдельности
+    py=$(ps -o rss= -p "$(systemctl show -p MainPID --value vision-backend)" 2>/dev/null)
+    ff=$(ps -o rss= -C ffmpeg 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+    line="$line | backend-python=$(( ${py:-0} / 1024 ))MB ffmpeg-total=${ff:-0}MB"
     gpus=$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu,temperature.gpu,clocks_throttle_reasons.active \
            --format=csv,noheader,nounits | tr '\n' ';')
     echo "$line | gpu(idx,memMB,util%,°C,throttle) $gpus" >> "$OUT/soak.log"
