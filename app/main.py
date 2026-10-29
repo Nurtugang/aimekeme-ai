@@ -137,5 +137,6 @@ class Percentiles(BaseModel):
 
 @app.get("/stats", response_model=dict[str, dict[str, Percentiles]], tags=["system"])
 def get_stats() -> dict[str, dict[str, Percentiles]]:
-    """Замеры с рестарта, мс: total_ms по /detect/*, lock_wait_ms и lock_held_ms по моделям"""
+    """Замеры, мс: total_ms по /detect/*, lock_wait_ms и lock_held_ms по моделям.
+    count — с рестарта, p50/p95 — за последние 10 минут"""
     return stats.snapshot()

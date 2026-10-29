@@ -16,6 +16,9 @@ WorkingDirectory=/opt/aimekeme
 EnvironmentFile=/etc/aimekeme/%i.env
 # Кэш весов (HuggingFace, insightface, ultralytics) — в домашнем каталоге.
 Environment=HOME=/var/lib/vision
+# Меньше арен glibc: иначе память после дневных пиков не отдаётся системе
+# и уровень растёт день ото дня (24-часовой прогон, +200 МБ/сутки на GPU1).
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/aimekeme/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port ${PORT}
 # R3 в docs/SCALING_TZ.md: упавший процесс поднимается сам; загрузка моделей
 # с прогревом ~20-30 с, пока его запросы принимает резерв (nginx).

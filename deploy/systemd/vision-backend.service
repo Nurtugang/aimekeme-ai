@@ -12,6 +12,9 @@ User=vision
 Group=vision
 WorkingDirectory=/opt/vision/platform/backend
 Environment=HOME=/var/lib/vision
+# Меньше арен glibc (на камеру несколько потоков): иначе память после дневных
+# пиков не отдаётся системе (24-часовой прогон, +265 МБ/сутки в ночном уровне).
+Environment=MALLOC_ARENA_MAX=2
 # Без --reload: broker плодит потоки при перезагрузке кода (vision/DEPLOYMENT.md).
 ExecStart=/opt/vision/platform/backend/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8013
 Restart=always
