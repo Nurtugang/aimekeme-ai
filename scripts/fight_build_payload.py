@@ -15,8 +15,8 @@
 Инструмент для разработчика/тестов; сам сервис его не использует.
 
 Пример:
-    python scripts/build_payload.py path/to/video.mp4
-    python scripts/build_payload.py video.mp4 -o out --stride 8   # с перекрытием
+    python scripts/fight_build_payload.py path/to/video.mp4
+    python scripts/fight_build_payload.py video.mp4 -o out --stride 8   # с перекрытием
     curl -X POST http://localhost:8000/detect/fight \\
          -H "Content-Type: application/json" \\
          -d @video/window_0000_f000000-000015/payload.json

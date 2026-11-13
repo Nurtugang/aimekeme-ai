@@ -87,7 +87,7 @@ def _feet_points(boxes: np.ndarray) -> list[tuple[int, int]]:
     "карта присутствия по головам", чем карта проходимости пола.
     """
     points = []
-    for x1, y1, x2, y2 in boxes:
+    for x1, _y1, x2, y2 in boxes:
         points.append((int((x1 + x2) / 2), int(y2)))
     return points
 

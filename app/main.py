@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 
 import torch
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import stats

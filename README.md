@@ -14,11 +14,9 @@
   `COUNT_MODEL`): `frcnn` — torchvision Faster R-CNN, класс person (BSD, по умолчанию);
   `yolo_head` — YOLOv8-детектор голов на SCUT-HEAD, точнее в толпе (ultralytics, AGPL).
   `count` = число боксов выше порога.
-- **persons** — детекция людей + цвет одежды (верх/низ) по пачке кадров (YOLOv8n-pose,
+- **persons** — детекция людей + цвет одежды (верх/низ) по пачке кадров (YOLOv8-pose,
   ultralytics). Бокс делится на торс/ноги по keypoints скелета (fallback — фиксированные
   доли высоты). Опциональный `query` фильтрует людей по названию цвета.
-
-Все модели грузятся **один раз при старте** (lifespan) и складываются в реестр;
 
 ## Структура
 
@@ -33,10 +31,17 @@ app/
 ├── counting/               # model_frcnn.py · model_yolo_head.py · detector.py · schemas.py · router.py
 └── persons/                # model.py · detector.py · schemas.py · router.py
 known_faces/                # мини-база лиц: <id>_<k>.jpg + faces.db (см. known_faces/README.md)
-scripts/
-├── build_payload.py        # нарезает видео на окна по 16 кадров для тестов fight
+scripts/                    # инструменты разработчика, сервис их не использует
+├── bench_models.py         # замер моделей на карте (docs/SCALING_TZ.md, этап 0)
+├── fight_build_payload.py  # нарезает видео на окна по 16 кадров для тестов fight
+├── fight_infer.py          # fight по видеофайлу
 ├── encode_image.py         # фото -> JSON для теста /detect/face
-└── bench_models.py         # замер моделей на карте (docs/SCALING_TZ.md, этап 0)
+├── extract_frames.py       # кадр в секунду из видео -> JSON для тестов
+├── fire_infer.py           # огонь/дым по видеофайлу
+├── counting_infer.py       # подсчёт людей по видеофайлу
+├── heatmap_infer.py        # прототип тепловой карты по видеофайлу
+├── persons_infer.py        # люди + цвет одежды по видеофайлу
+└── persons_web.py          # веб-интерфейс поверх persons_infer.py
 ```
 
 Модели грузятся один раз при старте (lifespan) и кладутся в `app.state.detectors`;
@@ -244,12 +249,12 @@ GPU. Подробнее — `docs/SCALING_TZ.md` §3, §4.4.
 
 ## Быстрая проверка (fight)
 
-`build_payload.py` нарезает видео на окна по 16 кадров. Рядом с видео появляется
+`fight_build_payload.py` нарезает видео на окна по 16 кадров. Рядом с видео появляется
 папка `<имя_видео>/`, в каждой подпапке `window_*` лежат `payload.json` (тело
 запроса) и `clip.mp4`.
 
 ```bash
-python scripts/build_payload.py test/file_000001.avi
+python scripts/fight_build_payload.py test/file_000001.avi
 curl -X POST http://localhost:8000/detect/fight \
      -H "Content-Type: application/json" \
      -d @test/file_000001/window_0000_f000000-000015/payload.json
