@@ -22,9 +22,8 @@
 
 ```
 app/
-├── main.py                 # FastAPI: lifespan грузит все модели в app.state, /health, /stats
+├── main.py                 # FastAPI: lifespan грузит все модели в app.state, /health
 ├── config.py               # Settings (env / .env)
-├── stats.py                # замеры ожидания lock / времени модели для /stats
 ├── fight/                  # model.py · detector.py · schemas.py · router.py
 ├── face/                   # model.py · detector.py · schemas.py · router.py
 ├── fire/                   # model_siglip2.py · model_yolo_dfire.py · detector.py · schemas.py · router.py
@@ -224,18 +223,7 @@ keypoints скелета (YOLOv8n-pose); если keypoints не распозн�
 ```
 
 Если `DEVICE` не `cpu` и CUDA есть, а onnxruntime (face) не смог подняться на
-CUDA — сервис не стартует (раньше face молча уходил на CPU).
-
-### `GET /stats`
-Замеры с рестарта процесса, мс: `count`, `p50`, `p95` (перцентили — по последним
-2048). `/detect/<name>` → `total_ms` (полное время запроса); `<модель>` →
-`lock_wait_ms` (ждал очереди к модели) и `lock_held_ms` (работала модель).
-Растёт `lock_wait_ms` — не хватает процессов; растёт `lock_held_ms` — модель или
-GPU. Подробнее — `docs/SCALING_TZ.md` §3, §4.4.
-```json
-{ "/detect/face": {"total_ms": {"count": 30, "p50": 20.0, "p95": 29.7}},
-  "face": {"lock_wait_ms": {...}, "lock_held_ms": {"count": 30, "p50": 17.5, "p95": 27.0}}, ... }
-```
+CUDA — сервис не стартует.
 
 ## Конфигурация
 

@@ -43,7 +43,6 @@ from PIL import Image, ImageOps
 
 from app.face.model import detect_faces, load_face_model, warmup
 from app.config import Settings
-from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.face")
 
@@ -257,7 +256,7 @@ class FaceDetector:
 
     def _get_faces(self, bgr: np.ndarray) -> list:
         """Все лица на кадре (с фильтром по det_thresh), под локом GPU."""
-        with timed_lock(self._lock, "face"):
+        with self._lock:
             faces = detect_faces(self._app, bgr)
         return self._filter(faces)
 
@@ -418,7 +417,7 @@ class FaceDetector:
         # Декодируем всё заранее: битый кадр упадёт, не заняв GPU.
         bgrs = [self._decode(raw, i) for i, raw in enumerate(frames)]
 
-        with timed_lock(self._lock, "face"):
+        with self._lock:
             per_frame = [detect_faces(self._app, bgr) for bgr in bgrs]
 
         results = []

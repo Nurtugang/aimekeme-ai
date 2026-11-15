@@ -6,14 +6,12 @@
 """
 
 import logging
-import time
 from contextlib import asynccontextmanager
 
 import torch
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app import stats
 from app.counting.detector import CountingDetector
 from app.counting.router import router as counting_router
 from app.face.detector import FaceDetector
@@ -84,16 +82,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-@app.middleware("http")
-async def time_detect_requests(request: Request, call_next):
-    """Полное время запроса /detect/* для GET /stats"""
-    start = time.perf_counter()
-    response = await call_next(request)
-    if request.url.path.startswith("/detect/"):
-        stats.record(request.url.path, "total_ms", (time.perf_counter() - start) * 1000.0)
-    return response
-
-
 app.include_router(fight_router)
 app.include_router(face_router)
 app.include_router(fire_router)
@@ -126,16 +114,3 @@ def health() -> HealthResponse:
         models=models,
         version=settings.api_version,
     )
-
-
-class Percentiles(BaseModel):
-    count: int
-    p50: float
-    p95: float
-
-
-@app.get("/stats", response_model=dict[str, dict[str, Percentiles]], tags=["system"])
-def get_stats() -> dict[str, dict[str, Percentiles]]:
-    """Замеры, мс: total_ms по /detect/*, lock_wait_ms и lock_held_ms по моделям.
-    count — с рестарта, p50/p95 — за последние 10 минут"""
-    return stats.snapshot()

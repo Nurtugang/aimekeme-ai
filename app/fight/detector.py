@@ -20,7 +20,6 @@ import torch.nn.functional as F
 
 from app.fight.model import load_model, preprocess_frames
 from app.config import Settings
-from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.fight")
 
@@ -86,7 +85,7 @@ class FightDetector:
         decoded = [self._decode_frame(raw, i) for i, raw in enumerate(frames)]
         tensor = preprocess_frames(decoded).to(self._device)
 
-        with timed_lock(self._lock, "fight"), torch.inference_mode():
+        with self._lock, torch.inference_mode():
             logits = self._model(tensor)
             probs = F.softmax(logits, dim=1)[0]
 

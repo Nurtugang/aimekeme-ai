@@ -38,7 +38,6 @@ import torch
 
 from app.persons.model import detect, load_persons_model
 from app.config import Settings
-from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.persons")
 
@@ -234,7 +233,7 @@ class PersonsDetector:
         start = time.perf_counter()
         decoded = [self._decode_frame(raw, i) for i, raw in enumerate(frames)]
 
-        with timed_lock(self._lock, "persons"):
+        with self._lock:
             per_frame_dets = detect(
                 self._model, decoded, self._settings.persons_conf_thresh, self._device
             )

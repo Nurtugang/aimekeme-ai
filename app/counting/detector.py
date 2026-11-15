@@ -32,7 +32,6 @@ import torch
 from app.counting.model_frcnn import FrcnnCounter
 from app.counting.model_yolo_head import YoloHeadCounter
 from app.config import Settings
-from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.counting")
 
@@ -107,16 +106,16 @@ class CountingDetector:
             InvalidImageError: если кадр не валидный base64/JPEG.
         """
         if for_heatmap:
-            backend, lock, group = self._heatmap, self._heatmap_lock, "heatmap"
+            backend, lock = self._heatmap, self._heatmap_lock
         else:
-            backend, lock, group = self._primary, self._primary_lock, "counting"
+            backend, lock = self._primary, self._primary_lock
         if not backend.is_ready:
             raise RuntimeError("Model is not loaded")
 
         start = time.perf_counter()
 
         bgr = self._decode(frame)
-        with timed_lock(lock, group):
+        with lock:
             boxes, scores = backend.predict(bgr)
 
         count = int(scores.shape[0])

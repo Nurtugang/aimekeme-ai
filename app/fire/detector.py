@@ -28,7 +28,6 @@ from PIL import Image
 from app.config import Settings
 from app.fire.model_siglip2 import Siglip2FireClassifier
 from app.fire.model_yolo_dfire import YoloDfireDetector
-from app.stats import timed_lock
 
 logger = logging.getLogger("surveillance.fire")
 
@@ -95,7 +94,7 @@ class FireDetector:
         start = time.perf_counter()
 
         image = self._decode(frame)
-        with timed_lock(self._lock, "fire"):
+        with self._lock:
             scores, _ = self.analyze(image)
 
         label, confidence = self.decide(scores)
