@@ -31,17 +31,6 @@ app/
 ├── counting/               # model_frcnn.py · model_yolo_head.py · detector.py · schemas.py · router.py
 └── persons/                # model.py · detector.py · schemas.py · router.py
 known_faces/                # мини-база лиц: <id>_<k>.jpg + faces.db (см. known_faces/README.md)
-scripts/                    # инструменты разработчика, сервис их не использует
-├── bench_models.py         # замер моделей на карте (docs/SCALING_TZ.md, этап 0)
-├── fight_build_payload.py  # нарезает видео на окна по 16 кадров для тестов fight
-├── fight_infer.py          # fight по видеофайлу
-├── encode_image.py         # фото -> JSON для теста /detect/face
-├── extract_frames.py       # кадр в секунду из видео -> JSON для тестов
-├── fire_infer.py           # огонь/дым по видеофайлу
-├── counting_infer.py       # подсчёт людей по видеофайлу
-├── heatmap_infer.py        # прототип тепловой карты по видеофайлу
-├── persons_infer.py        # люди + цвет одежды по видеофайлу
-└── persons_web.py          # веб-интерфейс поверх persons_infer.py
 ```
 
 Модели грузятся один раз при старте (lifespan) и кладутся в `app.state.detectors`;
@@ -245,19 +234,6 @@ GPU. Подробнее — `docs/SCALING_TZ.md` §3, §4.4.
 ```json
 { "/detect/face": {"total_ms": {"count": 30, "p50": 20.0, "p95": 29.7}},
   "face": {"lock_wait_ms": {...}, "lock_held_ms": {"count": 30, "p50": 17.5, "p95": 27.0}}, ... }
-```
-
-## Быстрая проверка (fight)
-
-`fight_build_payload.py` нарезает видео на окна по 16 кадров. Рядом с видео появляется
-папка `<имя_видео>/`, в каждой подпапке `window_*` лежат `payload.json` (тело
-запроса) и `clip.mp4`.
-
-```bash
-python scripts/fight_build_payload.py test/file_000001.avi
-curl -X POST http://localhost:8000/detect/fight \
-     -H "Content-Type: application/json" \
-     -d @test/file_000001/window_0000_f000000-000015/payload.json
 ```
 
 ## Конфигурация

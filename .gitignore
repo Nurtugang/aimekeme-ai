@@ -9,8 +9,8 @@ CLAUDE.md
 known_faces/*
 !known_faces/README.md
 
-# Веса моделей: ultralytics качает их в рабочую директорию. Не коммитим.
+# Веса моделей
 *.pt
 
-# Результаты scripts/persons_web.py: кадры и видео аудиторий (люди) — не коммитим.
-scripts/persons_web_output/
+# Локальные инструменты разработчика
+scripts/
