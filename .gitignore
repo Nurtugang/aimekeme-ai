@@ -10,6 +10,7 @@ known_faces/*
 !known_faces/README.md
 
 # Веса моделей
+models/
 *.pt
 
 # Локальные инструменты разработчика

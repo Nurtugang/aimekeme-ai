@@ -71,40 +71,23 @@ _PALETTE = [
 
 
 _NEUTRAL_LABELS = {"black", "white", "gray"}
-# HSV самой палитры, посчитан один раз -- нужен только для хроматических цветов
-# (чёрный/белый/серый определяются отдельно по яркости/насыщенности ниже).
+# HSV палитры без нейтральных цветов (их определяем по яркости/насыщенности)
 _PALETTE_HSV = [
     (label, colorsys.rgb_to_hsv(*(c / 255.0 for c in rgb)))
     for label, rgb in _PALETTE
     if label not in _NEUTRAL_LABELS
 ]
-# Насколько сильно расхождение по оттенку важнее расхождения по
-# насыщенности/яркости при поиске ближайшего названия. Подобрано так, чтобы
-# каждый цвет палитры сам сопоставлялся с собой (round-trip) и приглушённые
-# версии основных оттенков (типичная ткань при комнатном свете, не студийный
-# яркий цвет) не схлопывались в один и тот же лейбл.
+# Оттенок важнее насыщенности/яркости; подобрано, чтобы каждый цвет палитры
+# узнавался сам собой, а приглушённые оттенки не схлопывались в один.
 _HUE_WEIGHT = 3.0
 _SV_WEIGHT = 0.7
 
 
 def _nearest_color_label(rgb) -> str:
-    """Ближайшее название цвета из палитры.
+    """Ближайшее название цвета из палитры, по HSV.
 
-    Раньше здесь был Евклид по LAB: он на глаз кажется «перцептуально честным»,
-    но для приглушённых/тёмных цветов (обычная одежда при слабом освещении,
-    а не студийный яркий цвет) канал светлоты L забивает a/b -- в LAB-расстоянии
-    начинает решать не оттенок, а «насколько темно», и любой приглушённый цвет
-    (тёмно-синий, тёмно-красный, тёмно-жёлтый) утягивает в ближайший тёмный
-    нейтральный лейбл (brown/gray/black), даже когда глазом цвет прекрасно
-    виден. Проверено на реальном кадре аудитории: голубая рубашка при слабом
-    свете мерилась как RGB(61,85,105) -- HSV это ровно синий (hue 207°), но
-    LAB-ближайшим оказывался "brown".
-
-    Здесь вместо этого: чёрный/белый/серый отсекаются сразу по яркости/
-    насыщенности (у них нет осмысленного оттенка), а для всего остального
-    оттенок (по кругу) -- главный критерий, насыщенность/яркость -- вторичный,
-    чтобы всё ещё различать пары на одном оттенке (navy/blue, maroon/red,
-    brown/orange, beige/yellow).
+    Чёрный/белый/серый — по яркости и насыщенности, остальные — в первую очередь
+    по оттенку: так тёмная ткань при слабом свете не теряет цвет.
     """
     r, g, b = rgb
     h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
@@ -158,19 +141,8 @@ def _dominant_color(region_bgr: np.ndarray) -> tuple[int, int, int]:
 
 def _region_bounds(
     crop_h: int, body_lines_rel: dict | None
-) -> tuple[tuple[float, float], tuple[float, float] | None, bool]:
+) -> tuple[tuple[float, float], tuple[float, float] | None]:
     """Границы (верх, низ) зоны в пикселях кропа. Низ = None, если его не видно.
-
-    Третий элемент (`top_from_keypoints`) отдаём наружу как диагностику, не как
-    часть публичного контракта: True -- верх взят по плечам/бёдрам, False --
-    сработал запасной вариант (фиксированная доля высоты бокса). Запасной
-    вариант предполагает, что торс всегда в верхней части бокса, а голова -- ещё
-    выше и не занимает эту долю; для сидящего склонившегося человека на камере
-    сверху это предположение может не выполняться (голова опущена к парте и
-    занимает больше доли бокса, чем у стоящего). Не подтверждено измерением,
-    насколько часто это реально происходит на конкретной съёмке -- отсюда и
-    диагностика: `scripts/persons_web.py` показывает долю кадров с этим флагом
-    в отчёте, смотрите её вместе со стабильностью цвета, а не как готовый вывод.
 
     Низ считаем видимым только когда ноги реально попали в кадр. Одних
     keypoints мало: pose-модель дорисовывает скрытые суставы, и у сидящего за
@@ -179,6 +151,8 @@ def _region_bounds(
     колени лежали внутри бокса (замеры на аудитории: сидящие -- бёдра 0.8-1.3,
     колени 0.93-1.12 высоты бокса; стоящие -- 0.6 и 0.85). Иначе там парта, и
     честнее вернуть None, чем правдоподобное враньё.
+    Верх при отсутствии keypoints ещё можно взять по долям высоты (торс всегда
+    в верхней части бокса), низ -- уже нет.
     """
     if body_lines_rel is not None:
         shoulder_y = body_lines_rel["shoulder_y"]
@@ -198,8 +172,8 @@ def _region_bounds(
                 if bottom[1] - bottom[0] < _MIN_REGION_PX:
                     bottom = None
             if top[1] - top[0] >= _MIN_REGION_PX:
-                return top, bottom, True
-    return (crop_h * 0.22, crop_h * 0.52), None, False
+                return top, bottom
+    return (crop_h * 0.22, crop_h * 0.52), None
 
 
 class InvalidFrameError(ValueError):
@@ -316,18 +290,16 @@ class PersonsDetector:
                 "knee_y": (bl["knee_y"] - y1) if bl["knee_y"] is not None else None,
             }
 
-        top_bounds, bottom_bounds, top_from_keypoints = _region_bounds(crop_h, body_lines_rel)
+        top_bounds, bottom_bounds = _region_bounds(crop_h, body_lines_rel)
         margin_x = max(1, int(crop_w * 0.2))
 
         t0, t1 = top_bounds
         top_rgb = _dominant_color(crop[int(t0):int(t1), margin_x:crop_w - margin_x])
 
         bottom_rgb = None
-        bottom_sample_px = None
         if bottom_bounds is not None:
             b0, b1 = bottom_bounds
             bottom_rgb = _dominant_color(crop[int(b0):int(b1), margin_x:crop_w - margin_x])
-            bottom_sample_px = [x1 + margin_x, y1 + b0, x2 - margin_x, y1 + b1]
 
         return {
             "track_id": det["track_id"],
@@ -338,17 +310,6 @@ class PersonsDetector:
             "bottom_visible": bottom_rgb is not None,
             "bottom_color": _nearest_color_label(bottom_rgb) if bottom_rgb else None,
             "bottom_hsv": _rgb_to_hsv_out(bottom_rgb) if bottom_rgb else None,
-            # Диагностика для офлайн-анализа (scripts/persons_web.py), не публичный
-            # контракт API: PersonsResponse/PersonBox эти лишние ключи молча
-            # отбрасывает при валидации, /detect/persons их не отдаёт.
-            "top_from_keypoints": top_from_keypoints,
-            # Абсолютные пиксели В ИСХОДНОМ (ещё не размеченном) кадре -- именно
-            # отсюда взят top_rgb/top_color. Нужно, чтобы можно было вырезать
-            # ровно то, что видел алгоритм, а не гадать по кадру с уже
-            # нарисованными рамками/подписями поверх (они могут наехать на
-            # соседний бокс на тесной рассадке и исказить проверку на глаз).
-            "top_sample_px": [x1 + margin_x, y1 + t0, x2 - margin_x, y1 + t1],
-            "bottom_sample_px": bottom_sample_px,
         }
 
     # --- helpers -------------------------------------------------------

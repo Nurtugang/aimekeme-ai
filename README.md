@@ -31,6 +31,7 @@ app/
 ├── counting/               # model_frcnn.py · model_yolo_head.py · detector.py · schemas.py · router.py
 └── persons/                # model.py · detector.py · schemas.py · router.py
 known_faces/                # мини-база лиц: <id>_<k>.jpg + faces.db (см. known_faces/README.md)
+models/                     # веса YOLOv8-pose для persons (в .gitignore, качаются сами)
 ```
 
 Модели грузятся один раз при старте (lifespan) и кладутся в `app.state.detectors`;

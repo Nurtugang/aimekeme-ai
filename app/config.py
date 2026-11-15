@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     face_max_image_side: int = 1600
 
     # --- persons (YOLOv8-pose + BoT-SORT)
-    persons_weights: str = "yolov8l-pose.pt"
+    persons_weights: str = "models/yolov8l-pose.pt"
     persons_conf_thresh: float = 0.4
 
 
