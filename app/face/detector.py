@@ -293,8 +293,6 @@ class FaceDetector:
                     raise DuplicateNameError(f"name '{name}' already exists") from exc
                 face_id = cur.lastrowid
                 self._persist(conn, face_id, prepared)
-                self._bump_version(conn)
-                conn.commit()
             self._reload_gallery()
 
         logger.info("Enrolled face id=%d name=%s with %d photo(s)", face_id, name, len(prepared))
@@ -315,8 +313,6 @@ class FaceDetector:
         with self._write_lock:
             with closing(self._connect()) as conn:
                 self._persist(conn, face_id, prepared)
-                self._bump_version(conn)
-                conn.commit()
                 total = conn.execute(
                     "SELECT COUNT(*) FROM embeddings WHERE face_id = ?", (face_id,)).fetchone()[0]
             self._reload_gallery()
@@ -370,13 +366,22 @@ class FaceDetector:
 
     def _persist(self, conn: sqlite3.Connection, face_id: int,
                  prepared: list[tuple[Image.Image, np.ndarray]]) -> None:
-        """Фото -> <id>_<k>.jpg, эмбеддинги -> embeddings (коммитит вызывающий)"""
-        for pil, emb in prepared:
-            path = self._next_image_path(face_id)
-            pil.save(path, "JPEG", quality=95)
-            conn.execute(
-                "INSERT INTO embeddings(face_id, file, vector) VALUES(?, ?, ?)",
-                (face_id, path.name, emb.tobytes()))
+        """Фото -> <id>_<k>.jpg, эмбеддинги -> embeddings, коммит; при ошибке фото удаляются"""
+        written = []
+        try:
+            for pil, emb in prepared:
+                path = self._next_image_path(face_id)
+                written.append(path)
+                pil.save(path, "JPEG", quality=95)
+                conn.execute(
+                    "INSERT INTO embeddings(face_id, file, vector) VALUES(?, ?, ?)",
+                    (face_id, path.name, emb.tobytes()))
+            self._bump_version(conn)
+            conn.commit()
+        except Exception:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
 
     # --- inference ---------------------------------------------------------
 
