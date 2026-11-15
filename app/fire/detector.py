@@ -94,11 +94,15 @@ class FireDetector:
         start = time.perf_counter()
 
         image = self._decode(frame)
+        decoded = time.perf_counter()
         with self._lock:
+            locked = time.perf_counter()
             scores, _ = self.analyze(image)
+        inferred = time.perf_counter()
 
         label, confidence = self.decide(scores)
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
 
         # Важное событие — огонь/дым. Обычные кадры пишем в DEBUG.
         if label != _NORMAL:
@@ -111,6 +115,12 @@ class FireDetector:
             "label": label,
             "confidence": round(confidence, 4),
             "processing_ms": round(elapsed_ms, 2),
+            "timings_ms": {
+                "decode": round((decoded - start) * 1000, 2),
+                "wait": round((locked - decoded) * 1000, 2),
+                "infer": round((inferred - locked) * 1000, 2),
+                "post": round((end - inferred) * 1000, 2),
+            },
         }
 
     def analyze(self, image: Image.Image) -> tuple[dict[str, float], list]:

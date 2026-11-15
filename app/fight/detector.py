@@ -84,17 +84,21 @@ class FightDetector:
 
         decoded = [self._decode_frame(raw, i) for i, raw in enumerate(frames)]
         tensor = preprocess_frames(decoded).to(self._device)
+        prepared = time.perf_counter()
 
         with self._lock, torch.inference_mode():
+            locked = time.perf_counter()
             logits = self._model(tensor)
             probs = F.softmax(logits, dim=1)[0]
 
         prob_fight = probs[_FIGHT_CLASS_IDX].item()
+        inferred = time.perf_counter()
         is_fight = prob_fight >= self._settings.fight_threshold
         label = "fight" if is_fight else "normal"
         confidence = prob_fight if is_fight else 1.0 - prob_fight
 
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
 
         # Важное событие — драка. Обычные кадры пишем в DEBUG (по умолчанию скрыт).
         if is_fight:
@@ -106,6 +110,12 @@ class FightDetector:
             "label": label,
             "confidence": round(confidence, 4),
             "processing_ms": round(elapsed_ms, 2),
+            "timings_ms": {
+                "decode": round((prepared - start) * 1000, 2),
+                "wait": round((locked - prepared) * 1000, 2),
+                "infer": round((inferred - locked) * 1000, 2),
+                "post": round((end - inferred) * 1000, 2),
+            },
         }
 
     # --- helpers -----------------------------------------------------------

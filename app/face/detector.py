@@ -387,15 +387,27 @@ class FaceDetector:
         start = time.perf_counter()
         self._sync_gallery()
         bgr = self._decode(frame)
-        faces_out = self._format(self._get_faces(bgr))
+        decoded = time.perf_counter()
+        with self._lock:
+            locked = time.perf_counter()
+            faces = detect_faces(self._app, bgr)
+        inferred = time.perf_counter()
+        faces_out = self._format(self._filter(faces))
 
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
         self._log(faces_out, len(faces_out), elapsed_ms)
 
         return {
             "faces": faces_out,
             "count": len(faces_out),
             "processing_ms": round(elapsed_ms, 2),
+            "timings_ms": {
+                "decode": round((decoded - start) * 1000, 2),
+                "wait": round((locked - decoded) * 1000, 2),
+                "infer": round((inferred - locked) * 1000, 2),
+                "post": round((end - inferred) * 1000, 2),
+            },
         }
 
     def predict_batch(self, frames: list[str]) -> dict:

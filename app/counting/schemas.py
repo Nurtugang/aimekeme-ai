@@ -31,3 +31,6 @@ class CountingResponse(BaseModel):
     processing_ms: float = Field(
         ..., description="Время сервера на decode + inference, мс."
     )
+    timings_ms: dict[str, float] | None = Field(
+        None, description="Этапы processing_ms, мс: decode, wait (очередь к модели), infer, post."
+    )

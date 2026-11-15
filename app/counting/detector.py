@@ -115,13 +115,17 @@ class CountingDetector:
         start = time.perf_counter()
 
         bgr = self._decode(frame)
+        decoded = time.perf_counter()
         with lock:
+            locked = time.perf_counter()
             boxes, scores = backend.predict(bgr)
+        inferred = time.perf_counter()
 
         count = int(scores.shape[0])
         confidence = float(scores.mean()) if count else 0.0
 
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
         logger.debug("people=%d (%.1f ms)", count, elapsed_ms)
 
         return {
@@ -130,6 +134,12 @@ class CountingDetector:
             "confidence": round(confidence, 4),
             "boxes": boxes.tolist(),
             "processing_ms": round(elapsed_ms, 2),
+            "timings_ms": {
+                "decode": round((decoded - start) * 1000, 2),
+                "wait": round((locked - decoded) * 1000, 2),
+                "infer": round((inferred - locked) * 1000, 2),
+                "post": round((end - inferred) * 1000, 2),
+            },
         }
 
     # --- helpers -----------------------------------------------------------

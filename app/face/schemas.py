@@ -42,6 +42,7 @@ class FaceResponse(BaseModel):
     faces: list[FaceBox]
     count: int
     processing_ms: float
+    timings_ms: dict[str, float] | None = None
 
 
 class FaceFrameResult(BaseModel):
