@@ -5,13 +5,10 @@ test/
 .env
 CLAUDE.md
 
-# Игнорируем файлы с лицами, оставляем только README.md для примера структуры папки.
-known_faces/*
-!known_faces/README.md
-
 # Веса моделей
 models/
 *.pt
 
 # Локальные инструменты разработчика
 scripts/
+known_faces/

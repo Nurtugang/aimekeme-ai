@@ -1,4 +1,4 @@
-"""Pydantic-модели запроса/ответа для распознавания и базы лиц."""
+"""Pydantic-модели запроса/ответа для лиц."""
 
 from typing import Literal
 
@@ -8,14 +8,14 @@ from pydantic import BaseModel, Field, model_validator
 class FaceBox(BaseModel):
     box: list[float] = Field(..., description="Рамка лица [x1, y1, x2, y2].")
     det_confidence: float = Field(..., description="Уверенность детектора лица.")
-    identity: str = Field(..., description="Имя из базы или 'unknown'.")
-    identity_id: int | None = Field(None, description="ID записи из базы или null, если 'unknown'.")
-    similarity: float = Field(..., description="Косинусная близость к ближайшему лицу из базы.")
     sex: Literal["M", "F"] | None = Field(
         None, description="Пол по кадру (genderage). null, если модель не дала ответ."
     )
     age: int | None = Field(
         None, description="Возраст по кадру (genderage), годы. Оценка грубая, ±5-10 лет."
+    )
+    embedding: list[float] = Field(
+        ..., description="Вектор лица ArcFace, 512 чисел, L2-нормирован."
     )
 
 
@@ -59,9 +59,6 @@ class FaceBatchResponse(BaseModel):
     processing_ms: float
 
 
-class FaceRecord(BaseModel):
-    """Запись из базы лиц (без байтов картинки — она отдаётся отдельным эндпоинтом)."""
-    id: int = Field(..., description="Стабильный ID человека в базе.")
-    name: str = Field(..., description="Имя человека.")
-    created_at: str = Field(..., description="Когда добавлен (ISO 8601, UTC).")
-    photos: int = Field(..., description="Сколько эталонных фото у человека.")
+class EmbedResponse(BaseModel):
+    """Вектор единственного лица на фото."""
+    embedding: list[float] = Field(..., description="Вектор лица ArcFace, 512 чисел, L2-нормирован.")

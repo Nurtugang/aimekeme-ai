@@ -4,8 +4,9 @@
 несколько алгоритмов. Сейчас реализованы:
 
 - **fight** — детекция драк по клипу из 16 кадров (X3D-M, torch);
-- **face** — распознавание лиц по одному кадру (ArcFace, модель `buffalo_l` через
-  insightface/onnxruntime). Мини-база с несколькими эталонными фото на человека.
+- **face** — лица по одному кадру (ArcFace, модель `buffalo_l` через
+  insightface/onnxruntime): рамка, пол, возраст и вектор лица. Кто это — решает
+  платформа по своей базе лиц.
 - **fire** — детекция огня/дыма по одному кадру. Три сменные модели (выбор через
   `FIRE_MODEL`): `siglip2` — SigLIP2-классификатор кадра целиком (transformers);
   `yolo_dfire` — YOLOv8n, дообученный на D-Fire, даёт боксы вокруг очага
@@ -29,7 +30,6 @@ app/
 ├── fire/                   # model_siglip2.py · model_yolo_dfire.py · detector.py · schemas.py · router.py
 ├── counting/               # model_frcnn.py · model_yolo_head.py · detector.py · schemas.py · router.py
 └── persons/                # model.py · detector.py · schemas.py · router.py
-known_faces/                # мини-база лиц: <id>_<k>.jpg + faces.db (см. known_faces/README.md)
 models/                     # веса YOLOv8-pose для persons (в .gitignore, качаются сами)
 ```
 
@@ -98,12 +98,13 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 ```json
 { "frame": "<base64_jpg>" }
 ```
-Ответ (для каждого лица — рамка, уверенность детектора, имя/ID из базы или `unknown`):
+Ответ (для каждого лица — рамка, уверенность детектора, пол, возраст, вектор лица):
 ```json
 {
   "faces": [
     { "box": [x1, y1, x2, y2], "det_confidence": 0.99,
-      "identity": "nurtugan", "identity_id": 1, "similarity": 0.71 }
+      "sex": "M", "age": 21,
+      "embedding": [0.0123, -0.0456, "... 512 чисел"] }
   ],
   "count": 1,
   "processing_ms": 18.0
@@ -129,8 +130,21 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 модели: один заход вместо N. Ровно одно из полей `frame`/`frames` (оба сразу
 или ни одного — 422).
 
-`identity` — имя или `"unknown"`; `identity_id` — стабильный ID человека или `null`.
 Ошибки (HTTP 422): `Invalid base64 image` · `Invalid base64 in frame 2` (индекс с нуля).
+`embedding` — вектор лица ArcFace: 512 чисел, L2-нормирован (косинус = скалярное
+произведение).
+
+### `POST /embed`
+Вектор лица по фото — для базы лиц на стороне платформы. Multipart, одно поле
+`image` (до `FACE_MAX_UPLOAD_BYTES`); фото обрабатывается как при добавлении
+человека (поворот по EXIF, уменьшение до `FACE_MAX_IMAGE_SIDE`).
+```bash
+curl -F image=@photo.jpg http://localhost:8000/embed
+```
+```json
+{ "embedding": [0.0123, -0.0456, "... 512 чисел"] }
+```
+Ошибки: 422 `invalid image` · `no face` · `more than one face`; 413 — файл больше лимита.
 
 ### `POST /detect/fire`
 Запрос — один base64-JPEG кадр:
@@ -201,21 +215,6 @@ keypoints скелета (YOLOv8n-pose); если keypoints не распозн�
 поля (`top` и/или `bottom`) — остальные отбрасываются, `count` — по оставшимся.
 Ошибки (HTTP 422): `Invalid base64 in frame 3`.
 
-### База лиц (enrollment)
-
-Эталоны лиц хранятся в этом сервисе (`known_faces/`). Управление — через API.
-Несколько фото на человека повышают точность (заливайте разные ракурсы/условия).
-
-- `POST   /faces` — записать человека. `multipart/form-data`: `name` + `images`
-  (1..N файлов, на каждом одно чёткое лицо) → `{ id, name, created_at, photos }`.
-- `POST   /faces/{id}/images` — догрузить ещё фото человеку.
-- `GET    /faces` — список `[{ id, name, created_at, photos }]`.
-- `GET    /faces/{id}/image` — первичное фото человека (image/jpeg).
-- `DELETE /faces/{id}` — удалить человека.
-
-Ошибки: нет годных лиц → `422`; имя занято → `409`; нет человека → `404`;
-файл больше лимита → `413`. Подробнее — `known_faces/README.md`.
-
 ### `GET /health`
 Готовность каждой модели и устройство:
 ```json
@@ -239,9 +238,7 @@ CUDA — сервис не стартует.
 | `COUNT_MODEL`          | `frcnn`       | модель подсчёта: `frcnn` (person, BSD) / `yolo_head` (головы, AGPL) |
 | `COUNT_SCORE_THRESH`   | `0.5`         | боксы ниже score/conf не идут в подсчёт         |
 | `COUNT_HEAD_VARIANT`   | `medium`      | для `yolo_head`: `medium` (точнее) / `nano` (быстрее) |
-| `FACE_MATCH_THRESHOLD` | `0.42`        | косинусная близость (ArcFace) >= порог ⇒ узнан  |
 | `FACE_DET_THRESH`      | `0.5`         | порог детектора лиц (insightface)               |
-| `KNOWN_FACES_DIR`      | `known_faces` | папка с эталонами лиц                           |
 | `PERSONS_CONF_THRESH`  | `0.4`         | боксы людей ниже уверенности детектора не идут в ответ |
 
 Число кадров (`expected_frames = 16`) задано в `app/config.py` — это требование модели.

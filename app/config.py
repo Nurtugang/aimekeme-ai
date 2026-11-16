@@ -25,8 +25,6 @@ class Settings(BaseSettings):
     count_head_variant: str = "medium"  # только для yolo_head: medium (точнее) | nano (быстрее)
 
     # --- face (ArcFace / buffalo_l) ---
-    known_faces_dir: str = "known_faces"
-    face_match_threshold: float = 0.42
     face_det_thresh: float = 0.5
     face_det_size: int = 640
     face_max_upload_bytes: int = 5 * 1024 * 1024
