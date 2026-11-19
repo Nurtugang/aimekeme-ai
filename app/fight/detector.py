@@ -16,14 +16,13 @@ import time
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from app.fight.model import load_model, preprocess_frames
 from app.config import Settings
 
 logger = logging.getLogger("surveillance.fight")
 
-# Индекс класса "драка" в логитах модели.
+# Индекс класса "драка" в выходе модели.
 _FIGHT_CLASS_IDX = 1
 # Терпим необязательный data-URI префикс, напр. "data:image/jpeg;base64,...".
 _DATA_URI_MARKER = "base64,"
@@ -88,8 +87,7 @@ class FightDetector:
 
         with self._lock, torch.inference_mode():
             locked = time.perf_counter()
-            logits = self._model(tensor)
-            probs = F.softmax(logits, dim=1)[0]
+            probs = self._model(tensor)[0]
 
         prob_fight = probs[_FIGHT_CLASS_IDX].item()
         inferred = time.perf_counter()

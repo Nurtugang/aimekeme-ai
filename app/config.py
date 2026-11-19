@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # fight
     expected_frames: int = 16     # Модель для классификации драки X3D-M требует 16 кадров
-    fight_threshold: float = 0.4
+    fight_threshold: float = 0.5
 
     # fire: выбор модели
     # siglip2 (классификатор кадра) | yolo_dfire (боксы, AGPL)

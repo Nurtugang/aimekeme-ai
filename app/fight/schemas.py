@@ -8,7 +8,11 @@ from pydantic import BaseModel, Field
 class DetectionRequest(BaseModel):
     frames: list[str] = Field(
         ...,
-        description="Ровно 16 base64-JPEG кадров в хронологическом порядке.",
+        description=(
+            "Ровно 16 base64-JPEG кадров в хронологическом порядке, РАВНОМЕРНО "
+            "взятых из последних ~8 секунд потока (np.linspace по индексам буфера). "
+            "Не 16 кадров подряд: 0.5 с модели мало, на таком клипе она драку не видит."
+        ),
         examples=[["<base64_jpg>", "...", "<base64_jpg>"]],
     )
 
